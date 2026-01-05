@@ -39,7 +39,11 @@ while [[ $# -gt 0 ]]; do
     --trim-start)
       TRIM_START="$2"; shift 2;;
     cookies-from-browser)
-      COOKIES_ARG="--cookies-from-browser $2"; shift 2;;
+      BROWSER="$2" # only set if specified
+      if [[ -n "$BROWSER" && "$BROWSER" != "none" ]]; then
+        COOKIES_ARG="--cookies-from-browser $BROWSER"
+      fi
+      shift 2;;
     *)
       usage;;
   esac
