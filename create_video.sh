@@ -1,13 +1,13 @@
 #!/bin/zsh
 
 # Script to download, trim, loop, and mux a YouTube video with WAV audio
-# Usage: ./script.sh -u "YT_VIDEO_URL" -w "WAV_PATH" -o "OUTPUT_PATH" --trim-start TRIM_START [cookies-from-browser chrome]
+# Usage: ./script.sh -u "YT_VIDEO_URL" -w "WAV_PATH" -o "OUTPUT_PATH" --trim-start TRIM_START [--thumbnail TIMESTAMP] [--blueprint PATH] [--qr PATH] [--cookies-from-browser chrome]
 
 set -e
 
 # Function to print usage
 usage() {
-  echo "Usage: $0 -u YT_VIDEO_URL -w WAV_PATH -o OUTPUT_PATH --trim-start TRIM_START [cookies-from-browser chrome]"
+  echo "Usage: $0 -u YT_VIDEO_URL -w WAV_PATH -o OUTPUT_PATH --trim-start TRIM_START [--thumbnail TIMESTAMP] [--blueprint PATH] [--qr PATH] [--cookies-from-browser chrome]"
   exit 1
 }
 
@@ -37,6 +37,12 @@ while [[ $# -gt 0 ]]; do
       OUTPUT_PATH="$2"; shift 2;;
     --trim-start)
       TRIM_START="$2"; shift 2;;
+    --thumbnail)
+      THUMBNAIL_TIME="$2"; shift 2;;
+    --blueprint)
+      BLUEPRINT_PATH="$2"; shift 2;;
+    --qr)
+      QR_PATH="$2"; shift 2;;
     --cookies-from-browser)
       BROWSER="$2" # only set if specified
       if [[ -n "$BROWSER" && "$BROWSER" != "none" ]]; then
@@ -68,11 +74,35 @@ if [[ ! -f "$WAV_PATH" ]]; then
   exit 1
 fi
 
+# Resolve script directory for default asset paths
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Default blueprint and QR to workspace assets if not specified
+[[ -z "$BLUEPRINT_PATH" ]] && BLUEPRINT_PATH="$SCRIPT_DIR/ASTYN THUMBNAIL BLUEPRINT.png"
+[[ -z "$QR_PATH" ]] && QR_PATH="$SCRIPT_DIR/ASTYN QR CODE.png"
+
+# Validate thumbnail options
+if [[ -n "$THUMBNAIL_TIME" ]]; then
+  if [[ ! -f "$BLUEPRINT_PATH" ]]; then
+    echo "Error: Blueprint image not found at: $BLUEPRINT_PATH"
+    exit 1
+  fi
+  if [[ ! -f "$QR_PATH" ]]; then
+    echo "Error: QR code image not found at: $QR_PATH"
+    exit 1
+  fi
+  # Convert thumbnail time to seconds if in HH:MM:SS or MM:SS format
+  if [[ "$THUMBNAIL_TIME" =~ : ]]; then
+    THUMBNAIL_TIME=$(echo "$THUMBNAIL_TIME" | awk -F: '{if (NF==3) print ($1 * 3600) + ($2 * 60) + $3; else if (NF==2) print ($1 * 60) + $2; else print $1}')
+  fi
+fi
+
 # Temporary files
 TMP_VIDEO="/tmp/yt_downloaded_$$.mp4"
 TMP_LOOP="/tmp/yt_loop_$$.mp4"
+TMP_FRAME="/tmp/yt_frame_$$.png"
 
-trap 'rm -f "$TMP_VIDEO" "$TMP_LOOP"' EXIT
+trap 'rm -f "$TMP_VIDEO" "$TMP_LOOP" "$TMP_FRAME"' EXIT
 
 # Download only video (no audio needed) - best quality
 echo "Downloading video from YouTube..."
@@ -98,6 +128,35 @@ ffmpeg -y \
   "$OUTPUT_PATH"
 
 echo "Done! Output: $OUTPUT_PATH\n"
+
+# Generate thumbnail if requested
+if [[ -n "$THUMBNAIL_TIME" ]]; then
+  THUMBNAIL_OUTPUT="${OUTPUT_PATH%.*}.png"
+
+  echo "Extracting frame at ${THUMBNAIL_TIME}s for thumbnail..."
+  ffmpeg -y -hide_banner -loglevel error \
+    -ss "$THUMBNAIL_TIME" -i "$TMP_VIDEO" \
+    -frames:v 1 -update 1 "$TMP_FRAME"
+
+  echo "Generating thumbnail..."
+  ffmpeg -hide_banner -loglevel error \
+    -i "$BLUEPRINT_PATH" \
+    -i "$TMP_FRAME" \
+    -i "$QR_PATH" \
+    -filter_complex "
+    [1] scale=w='if(gt(iw/ih,1),-1,1080)':h='if(gt(iw/ih,1),1080,-1)',
+        crop=1080:1080, setsar=1,
+        rgbashift=rh=-5:bh=5,
+        eq=gamma=1.5:contrast=1.2:saturation=1.6:brightness=0.05,
+        curves=r='0/0 0.5/0.4 1/1':g='0/0 0.5/0.35 1/1':b='0/0 0.4/0.6 0.7/0.98 1/1',
+        unsharp=3:3:1.2 [photo];
+    [2] scale=120:120, setsar=1 [qr];
+    [0][photo] overlay=x=(main_w-overlay_w)/2:y=(main_h-overlay_h)/2:shortest=1 [base];
+    [base][qr] overlay=x=(main_w-overlay_w)/2:y=890 [final]
+    " -map "[final]" -frames:v 1 -update 1 "$THUMBNAIL_OUTPUT"
+
+  echo "Thumbnail saved: $THUMBNAIL_OUTPUT\n"
+fi
 
 # Analyze the output video's audio stream
 echo "Analyzing output video audio..."
